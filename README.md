@@ -80,7 +80,7 @@ Build prerequisites:
    verify ROM checksums will report the two patched files as BAD — that is
    expected for a modified set.  To bypass the check in MAME, specify the
    romset directly from commandline.  For example, "MAME raiden2j".
-   If patching a PCB, burn to 2x 27C020 EPROMs and replace the existing ROMs.
+   If patching a PCB, burn to 2x 27C240 EPROMs and replace the existing ROMs.
    Be aware of Pin 1 alignment and do not insert backwards.
 
 ## Changing the boot-menu defaults
