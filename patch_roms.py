@@ -42,6 +42,10 @@ BOOT_DEFAULTS = {
     "sound_test":     1,   # default SOUND TEST track (0x00-0x5A)
     "title_logo":     1,   # 0=WHITE 1=COLOR
     "wpn_sw_upgrade": 0,   # 0=OFF 1=ON (switch pickups gain +1 level)
+    "boot_timeout":   30,  # boot-menu auto-confirm seconds (0-60); 0 = SKIP
+                           #   the menu entirely (arcade install). Hold P1
+                           #   START at power-on to force the menu when 0.
+    "multi_weapon":   1,   # 0=OFF (MULTI WPN locked off, e.g. arcade) 1=ON
 }
 assert BOOT_DEFAULTS["debug_menu"]     in (0, 1)
 assert BOOT_DEFAULTS["stage_select"]   in (0, 1)
@@ -50,9 +54,12 @@ assert 0 <= BOOT_DEFAULTS["rapid_fire"] <= 4
 assert 0 <= BOOT_DEFAULTS["sound_test"] <= 0x5A
 assert BOOT_DEFAULTS["title_logo"]     in (0, 1)
 assert BOOT_DEFAULTS["wpn_sw_upgrade"] in (0, 1)
+assert 0 <= BOOT_DEFAULTS["boot_timeout"] <= 60
+assert BOOT_DEFAULTS["multi_weapon"]   in (0, 1)
 BOOT_DEFAULTS_BYTES = [BOOT_DEFAULTS[k] for k in (
     "debug_menu", "stage_select", "region", "rapid_fire",
-    "sound_test", "title_logo", "wpn_sw_upgrade")]
+    "sound_test", "title_logo", "wpn_sw_upgrade",
+    "boot_timeout", "multi_weapon")]
 
 prg0_path  = sys.argv[1] if len(sys.argv) > 1 else os.path.join('raiden2j', 'prg0.u0211')
 rom2j_path = sys.argv[2] if len(sys.argv) > 2 else os.path.join('raiden2j', 'rom2j.u0212')
@@ -597,6 +604,48 @@ for name, phys, exp in checks:
     ok  = got == exp
     all_ok = all_ok and ok
     print(f"  {'OK' if ok else 'FAIL':4s}  {name}: {bytes(got).hex(' ')}")
+
+# ── Checkpoint-offset table cross-check (regression guard) ───────────────────
+# The mod's per-stage tables (ck_stage_0..9 + stage_max_areas in
+# stage_select.asm) MUST mirror the game's own checkpoint table at phys
+# 0x9A5FC (0x30-byte rows, FFFF-terminated word lists). If an offset diverges,
+# the area-select loader warps to the wrong scroll position/carrier and the
+# boss graphics corrupt (this was the Stage 5 / Stage 8 boss display glitch).
+# Launch stages (raw 0 = 1A, raw 6 = 6A) have no ROM checkpoints -> mod = [0x0000].
+import re
+CKPT_BASE = 0x9A5FC
+_asm = open('stage_select.asm', encoding='utf-8', errors='replace').read()
+
+def _rom_ckpts(stage):
+    row, out = CKPT_BASE + stage * 0x30, []
+    for k in range(8):
+        w = int.from_bytes(read_combined(row + 2 * k, 2), 'little')
+        if w == 0xFFFF:
+            break
+        out.append(w)
+    return out
+
+def _mod_ckpts(stage):
+    m = re.search(r'ck_stage_%d:\s*dw\s+([^;\n]+)' % stage, _asm)
+    assert m, f'ck_stage_{stage} not found in stage_select.asm'
+    vals = [int(v, 16) for v in re.findall(r'0x[0-9a-fA-F]+', m.group(1))]
+    return [v for v in vals if v != 0xFFFF]
+
+_maxareas = [int(x) for x in re.findall(r'db\s+(\d+)',
+             _asm[_asm.index('stage_max_areas:'):])][:10]
+
+print("  -- checkpoint tables vs ROM 0x9A5FC (regression guard) --")
+_ck_ok = True
+for stage in range(10):
+    rom_pos = _rom_ckpts(stage)
+    mod_pos = _mod_ckpts(stage)
+    expect  = [0x0000] if rom_pos == [] else rom_pos   # launch stages -> [0]
+    ok = mod_pos == expect and _maxareas[stage] == len(mod_pos)
+    _ck_ok = _ck_ok and ok
+    print(f"  {'OK' if ok else 'FAIL':4s}  ck_stage_{stage}: "
+          f"mod={[hex(x) for x in mod_pos]} rom={[hex(x) for x in rom_pos]} "
+          f"max={_maxareas[stage]}")
+all_ok = all_ok and _ck_ok
 
 if all_ok: print("\nAll checks passed.")
 else:       print("\nSome checks FAILED.")

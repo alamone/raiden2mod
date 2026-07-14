@@ -108,7 +108,8 @@ GAME_TIME   equ 0x9F8E      ; gameplay accumulator driving dynamic difficulty
 BOOT_DONE   equ 0xBF08      ; 0 = boot menu not yet shown; 1 = shown
 DEBUG_EN    equ 0xBF0A      ; 1 = debug menu enabled (default); 0 = disabled
 STSEL_EN    equ 0xBF0C      ; 1 = stage select enabled (default); 0 = disabled
-BOOT_TICKS  equ 1800        ; auto-confirm timeout: 1800 vblanks = 30 seconds
+BOOT_TICKS  equ 1800        ; historical default (30 s); the live budget is now
+                            ; BOOT_TMO seconds * 60, computed in boot_menu
 BOOT_NO_TMR equ 0xFFFF      ; sentinel: timer permanently stopped
 REGION_VAR  equ 0xBF0E      ; raw region byte for ROM patch at 9843D (reads FFFFB -> [9F67])
 RF_RATE     equ 0xBF10      ; rapid-fire rate index (0=off, 1=30HZ, 2=20HZ, 3=15HZ, 4=10HZ)
@@ -138,6 +139,16 @@ BOMB_PEND    equ 0xBF5E     ; player struct base of a late joiner whose bomb
                             ; writes the stock bombs AFTER our hook sites, so
                             ; the fill is deferred one frame to the per-frame
                             ; tick (L2_BJOIN). 0 = nothing pending.
+BOOT_TMO     equ 0xBF60     ; boot-menu auto-confirm timeout in SECONDS (0-60),
+                            ; copied from bd_timeout at power-on. 0 = SKIP the
+                            ; boot menu entirely (init still runs; defaults are
+                            ; applied silently). Hold P1 START at power-on to
+                            ; force the menu even when this is 0 (recovery).
+MWEN_VAR     equ 0xBF62     ; MULTI WEAPON master enable (from bd_multiwpn):
+                            ; 1 = available in stage select (default), 0 = the
+                            ; MULTI WPN row is locked OFF and MULTI_WPN is force-
+                            ; zeroed at game start (arcade gate). Independent of
+                            ; STAGE SELECT, which stays fully usable either way.
 SPAWN_Y      equ 0xBF28     ; (unused legacy slot, kept zeroed for safety)
 SPAWN_Y_VAL  equ 0xBF2A     ; adjusted_base; spawn_y_apply_impl forces player Y from this
                             ; each init-loop pass, self-disarms when zeroing stops
@@ -192,6 +203,7 @@ L2_BOMBS      equ 0x0050
 L2_WINIT      equ 0x0058
 L2_BJOIN      equ 0x0060
 L2_MAINOVR    equ 0x0068
+L2_ENFSINGLE  equ 0x0070
 L2_LOGO_WHITE equ 0x0500
 L2_LOGO_COLOR equ 0x05C0
 LOGO_VAR     equ 0xBF32     ; title logo palette: 0 = WHITE (boot-set art),
@@ -205,10 +217,12 @@ LOGO_VAR     equ 0xBF32     ; title logo palette: 0 = WHITE (boot-set art),
 SP4_GADGET   equ 0x5820     ; 9800:5820 = ADD SP,4 / RETF — arg cleanup for
                             ; near-calling 9800 functions with 2 word args
 RETF_GADGET  equ 0x7FFE     ; 9800:7FFE = RETF — for arg-less near calls
-ROW_BOOT_HDR  equ 8         ; boot menu header row (moved up for LOGO row)
-ROW_BOOT_DBG  equ 10        ; "DEBUG MENU" row
-ROW_BOOT_SS   equ 12        ; "STAGE SELECT" row
-ROW_BOOT_RF   equ 14        ; "RAPID FIRE" row
+ROW_BOOT_HDR  equ 6         ; boot menu header row (up 2 to make room for MW)
+ROW_BOOT_DBG  equ 8         ; "DEBUG MENU" row      (cursor 0)
+ROW_BOOT_SS   equ 10        ; "STAGE SELECT" row    (cursor 1)
+ROW_BOOT_MW   equ 12        ; "MULTI WEAPON" row    (cursor 2) — gates the
+                            ;   stage-select MULTI WPN option (MWEN_VAR)
+ROW_BOOT_RF   equ 14        ; "RAPID FIRE" row      (cursor 3)
 ROW_BOOT_RG   equ 16        ; "REGION" label row
 ROW_BOOT_RGVAL equ 17       ; region name value row
 ROW_BOOT_LOGO equ 19        ; "TITLE LOGO" row (WHITE/COLOR)
@@ -395,6 +409,8 @@ vec_pickup_sub:                     ; B692:00F8  — CALL FAR from A270:62FC (su
 ;   B6A24 sound test track 0..5Ah   -> prg0.u0211  @ 0x5B512
 ;   B6A25 title logo   0=WHT 1=COL  -> rom2j.u0212 @ 0x5B512
 ;   B6A26 wpn sw upgrade 0/1        -> prg0.u0211  @ 0x5B513
+;   B6A27 boot timeout 0..60 (s)    -> rom2j.u0212 @ 0x5B513   (0 = skip menu)
+;   B6A28 multi weapon enable 0/1   -> prg0.u0211  @ 0x5B514
 ; The TIMES below also asserts the vector table still ends at 0x100.
 ; ============================================================
     times (0x100 - ($ - $$)) db 0x90
@@ -406,6 +422,8 @@ bd_rf:      db 0
 bd_bgm:     db 1
 bd_logo:    db 1
 bd_wsu:     db 0
+bd_timeout: db 30                   ; boot-menu auto-confirm seconds; 0 = skip
+bd_multiwpn: db 1                   ; MULTI WEAPON available in stage select
     times (0x10 - ($ - boot_defaults)) db 0
 
 
@@ -1321,8 +1339,25 @@ boot_menu_gate:
     mov  [LOGO_VAR], ax
     cs   mov  al, [bd_wsu]
     mov  [WSU_VAR], ax
+    cs   mov  al, [bd_timeout]
+    mov  [BOOT_TMO], ax          ; auto-confirm seconds (0 = skip menu)
+    cs   mov  al, [bd_multiwpn]
+    mov  [MWEN_VAR], ax          ; MULTI WEAPON master enable
     mov  word [RF_CTR],  1       ; init counter (will reload on first trigger)
+
+    ; ── SKIP the boot menu when the timeout is 0 ─────────────
+    ; All scratch RAM is already initialised above from the defaults
+    ; table, so the mods operate normally; we simply don't show the
+    ; interactive menu. RECOVERY: holding P1 START at power-on forces
+    ; the menu even when timeout=0 (SYS_PORT bit0 active-low = held).
+    cmp  word [BOOT_TMO], 0
+    jne  bmg_show_menu
+    mov  ax, [SYS_PORT]
+    test ax, 0x0001              ; P1 START held? (0 = held)
+    jnz  bmg_after_menu  ; not held -> skip the menu entirely
+bmg_show_menu:
     call boot_menu
+bmg_after_menu:
     ; Translate display index -> raw region byte, then write [9F67] directly.
     mov  bx, [REGION_VAR]
     shl  bx, 1
@@ -1509,7 +1544,11 @@ vblank_spin:
     jz   chk_dn
     cmp  word [bp-2], 0
     jne  ss_up_dec
-    mov  word [bp-2], NUM_ITEMS  ; wrap: top -> bottom (dec lands on last)
+    ; wrap top -> bottom: land on the last VISIBLE item. MULTI WPN (the
+    ; highest index) is hidden when MWEN_VAR=0, so the count drops by 1.
+    call ss_eff_last            ; AX = last visible item index
+    inc  ax
+    mov  [bp-2], ax             ; dec below lands on the last visible item
 ss_up_dec:
     dec  word [bp-2]
     call draw_menu
@@ -1518,7 +1557,8 @@ chk_dn:
     test si, 0x0002         ; P1 or P2 DOWN
     jz   chk_lt
     mov  bx, [bp-2]
-    cmp  bx, NUM_ITEMS-1
+    call ss_eff_last            ; AX = last visible item index
+    cmp  bx, ax
     jb   ss_dn_inc
     mov  word [bp-2], 0xFFFF     ; wrap: bottom -> top (inc lands on 0)
 ss_dn_inc:
@@ -1633,60 +1673,21 @@ write_p2_weapons:
 
 ; ============================================================
 ; ENFORCE_SINGLE  — called by item_inc/item_dec after changing a weapon level.
-; If MULTI_WPN=0 (OFF) and a weapon was just set to non-zero,
-; zero out all other weapons in the same group (main or sub).
-;   BX = address of the var that just changed
+; Relocated to blob2 (enforce_single_impl, B581:0070) to free boot-menu
+; space; item_inc/item_dec far-call it via L2_SEG:L2_ENFSINGLE. It also
+; carries the MULTI WEAPON master gate (MWEN_VAR=0 -> MULTI_WPN forced 0).
 ; ============================================================
-enforce_single:
-    cmp  word [MULTI_WPN], 0
-    jne  es_done            ; multi weapons ON -> no enforcement
 
-    ; Check if the changed value is now non-zero
-    mov  ax, [bx]
-    test ax, ax
-    jz   es_done            ; value is 0, nothing to enforce
-
-    ; Is this a main weapon? (MW_VULCAN, MW_LASER, MW_PLASMA)
-    cmp  bx, MW_VULCAN
-    je   es_zero_main
-    cmp  bx, MW_LASER
-    je   es_zero_main
-    cmp  bx, MW_PLASMA
-    je   es_zero_main
-
-    ; Is this a sub weapon? (SW_NUCLEAR, SW_HOMING)
-    cmp  bx, SW_NUCLEAR
-    je   es_zero_sub
-    cmp  bx, SW_HOMING
-    je   es_zero_sub
-    jmp  es_done
-
-es_zero_main:
-    ; Zero all main weapons except the one at BX
-    cmp  bx, MW_VULCAN
-    je   es_zm_skip_v
-    mov  word [MW_VULCAN], 0
-es_zm_skip_v:
-    cmp  bx, MW_LASER
-    je   es_zm_skip_l
-    mov  word [MW_LASER], 0
-es_zm_skip_l:
-    cmp  bx, MW_PLASMA
-    je   es_done
-    mov  word [MW_PLASMA], 0
-    jmp  es_done
-
-es_zero_sub:
-    ; Zero all sub weapons except the one at BX
-    cmp  bx, SW_NUCLEAR
-    je   es_zs_skip_n
-    mov  word [SW_NUCLEAR], 0
-es_zs_skip_n:
-    cmp  bx, SW_HOMING
-    je   es_done
-    mov  word [SW_HOMING], 0
-
-es_done:
+; ── ss_eff_last — AX = last selectable stage-select item index ───────────────
+; NUM_ITEMS-1 normally; one lower when MULTI WEAPON is disabled (MWEN_VAR=0),
+; which hides the MULTI WPN row (the highest index). Used by the UP/DOWN
+; wrap logic so the cursor naturally skips the hidden row.
+ss_eff_last:
+    mov  ax, NUM_ITEMS-1
+    cmp  word [MWEN_VAR], 0
+    jne  ss_eff_last_ret
+    dec  ax
+ss_eff_last_ret:
     ret
 
 default_stage:
@@ -1792,26 +1793,47 @@ cko_write_0C:
 ; Controls (active-low P1P2_PORT / SYS_PORT, edge-detected):
 ;   UP / DOWN   : move cursor between the two items
 ;   LEFT / RIGHT: toggle selected item
-;   P1 START    : confirm immediately
+;   P1/P2 START : confirm (press EDGE — a START already held at entry,
+;                 i.e. the bd_timeout=0 recovery gesture, does not
+;                 confirm; only a fresh press does)
 ;
 ; Countdown uses VBLANK_CTR (increments each vblank = ~60 Hz).
-; After BOOT_TICKS (600 = 10 s) the current selection is accepted.
+; After BOOT_TMO seconds (bd_timeout, 0-60) the selection is auto-accepted.
+; (When reached here via START recovery with BOOT_TMO=0, there is no
+; auto-timeout — manual confirm only.)
 ;
-; Stack frame: [bp-2] = cursor (0=DEBUG 1=STSEL 2=RF 3=REGION 4=LOGO 5=SOUND)
-;              [bp-4] = prev P1P2 (for edge detect)
-;              [bp-6] = prev SYS  (for edge detect)
-;              [bp-8] = tick_start (VBLANK_CTR snapshot)
+; Stack frame: [bp-2]  = cursor (0=DEBUG 1=STSEL 2=MULTI WEAPON 3=RF 4=REGION
+;                        5=LOGO 6=SOUND 7=WPN UPGRADE)
+;              [bp-4]  = prev P1P2 (for edge detect)
+;              [bp-6]  = prev SYS  (for edge detect)
+;              [bp-8]  = tick_start (VBLANK_CTR snapshot), or BOOT_NO_TMR
+;              [bp-10] = auto-confirm budget in ticks (BOOT_TMO seconds * 60)
 ; ============================================================
 boot_menu:
     push bp
     mov  bp, sp
-    sub  sp, 8
+    sub  sp, 10
 
     mov  word [bp-2], 0          ; cursor starts on DEBUG_EN row
-    mov  word [bp-4], 0xFFFF
-    mov  word [bp-6], 0xFFFF
+    ; Seed the edge latches from the LIVE ports so a button already held
+    ; at entry (START-held recovery with bd_timeout=0) is not seen as a
+    ; press edge on the first frame.
+    mov  ax, [P1P2_PORT]
+    mov  [bp-4], ax
+    mov  ax, [SYS_PORT]
+    mov  [bp-6], ax
+
+    ; Compute the auto-confirm budget from BOOT_TMO (seconds -> ticks).
+    mov  ax, [BOOT_TMO]
+    mov  cx, 60
+    mul  cx                      ; dx:ax = seconds * 60 (<= 3600, fits AX)
+    mov  [bp-10], ax
     mov  ax, [VBLANK_CTR]
     mov  [bp-8], ax              ; snapshot tick counter
+    cmp  word [bp-10], 0         ; budget 0 (reached here via START recovery)?
+    jne  bm_have_timer
+    mov  word [bp-8], BOOT_NO_TMR ; -> no auto-timeout, manual confirm only
+bm_have_timer:
 
     call bm_draw                 ; initial draw
 
@@ -1827,14 +1849,14 @@ bm_vblank:
     je   bm_timeout_skip         ; timer stopped, never time out
     mov  ax, [VBLANK_CTR]
     sub  ax, [bp-8]              ; elapsed = now - start
-    cmp  ax, BOOT_TICKS
+    cmp  ax, [bp-10]            ; budget = BOOT_TMO seconds * 60
     jae  bm_done                 ; timed out -> accept current settings
 bm_timeout_skip:
 
     ; ── countdown display (skip if timer stopped) ───────────
     cmp  word [bp-8], BOOT_NO_TMR
     je   bm_ctr_skip
-    mov  cx, BOOT_TICKS
+    mov  cx, [bp-10]            ; remaining = budget - elapsed
     sub  cx, ax                  ; cx = remaining ticks
     mov  ax, cx
     xor  dx, dx
@@ -1880,6 +1902,26 @@ bm_tmr_clr:
     pop  es
 bm_no_input:
 
+    ; ── START confirm (press EDGE, not level) ───────────────
+    ; DX still holds this frame's SYS press edges (nothing since the
+    ; edge computation above touches DX). Level-triggered START here
+    ; broke the bd_timeout=0 recovery path: the menu was entered with
+    ; START already held, fell straight into a wait-for-release, and
+    ; exited the moment the player let go of the button. With the
+    ; seeded latch above, a held-at-entry START never edges — only a
+    ; fresh press confirms. After the edge, wait for both STARTs to be
+    ; released so the press can't leak into the game (free-play
+    ; auto-start).
+    test dx, 0x0003              ; P1 or P2 START newly pressed?
+    jz   bm_nav
+bm_wait_start_release:
+    mov  ax, [SYS_PORT]
+    not  ax                      ; active-low -> held bits now 1
+    test ax, 0x0003
+    jnz  bm_wait_start_release   ; wait until BOTH STARTs released
+    jmp  bm_done
+
+bm_nav:
     ; ── navigation ──────────────────────────────────────────
     ; Merge P2 directional bits (8-11) into P1 positions (0-3)
     ; so either player can navigate. (The same OR also merges P2 A/B
@@ -1894,7 +1936,7 @@ bm_no_input:
     ; precedes the track command so looping tracks (drum loops etc.)
     ; stop instead of layering under the new selection — same
     ; reset-then-track ordering the stage init uses.
-    cmp  word [bp-2], 5          ; cursor 5 = SOUND TEST
+    cmp  word [bp-2], 6          ; cursor 6 = SOUND TEST
     jne  bm_no_bgm_play
     test ax, 0x0030              ; P1 or P2 A/B newly pressed (merged)
     jz   bm_no_bgm_play
@@ -1912,7 +1954,7 @@ bm_no_bgm_play:
     jz   bm_chk_dn
     cmp  word [bp-2], 0
     jne  bm_up_dec
-    mov  word [bp-2], 7          ; wrap: top -> bottom (dec lands on 6)
+    mov  word [bp-2], 8          ; wrap: top -> bottom (dec lands on 7=WSU)
 bm_up_dec:
     dec  word [bp-2]
     call bm_draw
@@ -1920,7 +1962,7 @@ bm_up_dec:
 bm_chk_dn:
     test ax, 0x0002              ; P1 or P2 DOWN
     jz   bm_chk_lt
-    cmp  word [bp-2], 6          ; last row = 6 (WPN UPGRADE)
+    cmp  word [bp-2], 7          ; last row = 7 (WPN UPGRADE)
     jb   bm_dn_inc
     mov  word [bp-2], 0xFFFF     ; wrap: bottom -> top (inc lands on 0)
 bm_dn_inc:
@@ -1941,12 +1983,12 @@ bm_chk_rt:
     call bm_draw
 
 bm_chk_ok:
-    ; Accept any of: P1 START, P2 START (with release wait),
-    ; or P1/P2 A/B buttons (immediate exit — won't trigger free-play auto-start).
-    ; EXCEPTION: on the SOUND TEST row (cursor 5), A/B plays the selected
+    ; Accept P1/P2 A/B buttons as immediate exit (won't trigger
+    ; free-play auto-start). START is handled by the edge check above.
+    ; EXCEPTION: on the SOUND TEST row (cursor 6), A/B plays the selected
     ; track instead (handled above) and must not exit the menu.
-    cmp  word [bp-2], 5
-    je   bm_chk_start
+    cmp  word [bp-2], 6
+    je   bm_loop_again
 
     ; Check P1 A or B (P1P2_PORT bits 4/5, mask 0x0030, active-low: 0=held)
     ; Any bit being 0 means that button is held.
@@ -1959,27 +2001,8 @@ bm_chk_ok:
     test ax, 0x3000              ; P2 A or B held?
     jnz  bm_done                 ; yes -> exit immediately
 
-bm_chk_start:
-    ; Check P1 START (SYS_PORT bit 0, active-low)
-    mov  ax, [SYS_PORT]
-    test ax, 0x0001              ; P1 START held?
-    jnz  bm_chk_p2start          ; not held -> check P2 START
-    ; P1 START held -> wait for release before exiting
-bm_wait_p1_release:
-    mov  ax, [SYS_PORT]
-    test ax, 0x0001
-    jz   bm_wait_p1_release
-    jmp  bm_done
-
-bm_chk_p2start:
-    ; Check P2 START (SYS_PORT bit 1, active-low)
-    test ax, 0x0002              ; P2 START held?
-    jnz  bm_loop                 ; not held -> keep looping
-    ; P2 START held -> wait for release before exiting
-bm_wait_p2_release:
-    mov  ax, [SYS_PORT]
-    test ax, 0x0002
-    jz   bm_wait_p2_release
+bm_loop_again:
+    jmp  bm_loop
 
 bm_done:
     call bm_erase
@@ -1988,21 +2011,24 @@ bm_done:
     ret
 
 ; ── bm_left / bm_right ───────────────────────────────────────
-; Cursor map: 0=DEBUG 1=STSEL 2=RF 3=REGION 4=TITLE LOGO 5=SOUND TEST
+; Cursor map: 0=DEBUG 1=STSEL 2=MULTI WEAPON 3=RF 4=REGION 5=TITLE LOGO
+;             6=SOUND TEST 7=WPN UPGRADE
 bm_left:
-    cmp  word [bp-2], 6
+    cmp  word [bp-2], 7
     je   short bm_wsu_toggle
-    cmp  word [bp-2], 5
+    cmp  word [bp-2], 6
     je   short bm_left_bgm
-    cmp  word [bp-2], 4
+    cmp  word [bp-2], 5
     je   short bm_left_logo
-    cmp  word [bp-2], 3
+    cmp  word [bp-2], 4
     je   short bm_left_region
-    cmp  word [bp-2], 2
+    cmp  word [bp-2], 3
     je   short bm_left_rf
+    cmp  word [bp-2], 2
+    je   short bm_mw_toggle
     cmp  word [bp-2], 0
     je   short bm_left_dbg
-    xor  word [STSEL_EN], 1      ; toggle 0<->1
+    xor  word [STSEL_EN], 1      ; toggle 0<->1 (fallthrough = cursor 1)
     ret
 bm_left_logo:
     xor  word [LOGO_VAR], 1      ; toggle WHITE<->COLOR
@@ -2042,20 +2068,26 @@ bm_wsu_toggle:
     xor  word [WSU_VAR], 1       ; toggle ON<->OFF (shared by left/right)
     ret
 
+bm_mw_toggle:
+    xor  word [MWEN_VAR], 1      ; MULTI WEAPON enable (shared by left/right)
+    ret
+
 bm_right:
-    cmp  word [bp-2], 6
+    cmp  word [bp-2], 7
     je   short bm_wsu_toggle
-    cmp  word [bp-2], 5
+    cmp  word [bp-2], 6
     je   short bm_right_bgm
-    cmp  word [bp-2], 4
+    cmp  word [bp-2], 5
     je   short bm_right_logo
-    cmp  word [bp-2], 3
+    cmp  word [bp-2], 4
     je   short bm_right_region
-    cmp  word [bp-2], 2
+    cmp  word [bp-2], 3
     je   short bm_right_rf
+    cmp  word [bp-2], 2
+    je   short bm_mw_toggle
     cmp  word [bp-2], 0
     je   short bm_right_dbg
-    xor  word [STSEL_EN], 1      ; toggle 0<->1
+    xor  word [STSEL_EN], 1      ; toggle 0<->1 (fallthrough = cursor 1)
     ret
 bm_right_logo:
     xor  word [LOGO_VAR], 1      ; toggle WHITE<->COLOR
@@ -2150,9 +2182,29 @@ bm_draw_ss_off:
 bm_draw_ss_val:
     call write_str
 
-    ; "RAPID FIRE" row
+    ; "MULTI WEAPON" row (cursor 2) — master enable for the stage-select
+    ; MULTI WPN option (writes MWEN_VAR; OFF locks that row off in-game).
     mov  ah, ATTR
     cmp  word [bp-2], 2
+    jne  bm_draw_mw_attr
+    mov  ah, ATTR_HI
+bm_draw_mw_attr:
+    mov  di, VOFF(ROW_BOOT_MW, 7)
+    mov  si, bm_str_mw
+    call write_str
+    mov  di, VOFF(ROW_BOOT_MW, 21)
+    cmp  word [MWEN_VAR], 0
+    je   bm_draw_mw_off
+    mov  si, bm_str_on
+    jmp  bm_draw_mw_val
+bm_draw_mw_off:
+    mov  si, bm_str_off
+bm_draw_mw_val:
+    call write_str
+
+    ; "RAPID FIRE" row
+    mov  ah, ATTR
+    cmp  word [bp-2], 3
     jne  short bm_draw_rf_attr
     mov  ah, ATTR_HI
 bm_draw_rf_attr:
@@ -2174,7 +2226,7 @@ bm_draw_rf_clr:
 
     ; "REGION" label row + name on separate row
     mov  ah, ATTR
-    cmp  word [bp-2], 3
+    cmp  word [bp-2], 4
     jne  short bm_draw_rg_attr
     mov  ah, ATTR_HI
 bm_draw_rg_attr:
@@ -2197,7 +2249,7 @@ bm_draw_rg_clr:
 
     ; "TITLE LOGO" row + WHITE/COLOR value
     mov  ah, ATTR
-    cmp  word [bp-2], 4
+    cmp  word [bp-2], 5
     jne  short bm_draw_logo_attr
     mov  ah, ATTR_HI
 bm_draw_logo_attr:
@@ -2214,7 +2266,7 @@ bm_draw_logo_val:
 
     ; "SOUND TEST" row + 2-digit hex track number
     mov  ah, ATTR
-    cmp  word [bp-2], 5
+    cmp  word [bp-2], 6
     jne  short bm_draw_bgm_attr
     mov  ah, ATTR_HI
 bm_draw_bgm_attr:
@@ -2232,7 +2284,7 @@ bm_draw_bgm_attr:
 
     ; "WPN UPGRADE" row + ON/OFF value
     mov  ah, ATTR
-    cmp  word [bp-2], 6
+    cmp  word [bp-2], 7
     jne  short bm_draw_wsu_attr
     mov  ah, ATTR_HI
 bm_draw_wsu_attr:
@@ -2467,94 +2519,104 @@ bm_tt_done:
 bm_tt_line1:
     dw bm_tt_dbg1       ; cursor 0: DEBUG MENU
     dw bm_tt_ss1        ; cursor 1: STAGE SELECT
-    dw 0                ; cursor 2: RAPID FIRE (no tooltip)
-    dw 0                ; cursor 3: REGION (no tooltip)
-    dw bm_tt_logo1      ; cursor 4: TITLE LOGO
-    dw bm_tt_bgm1       ; cursor 5: SOUND TEST
-    dw bm_tt_wsu1       ; cursor 6: WPN UPGRADE
+    dw 0                ; cursor 2: MULTI WEAPON (no tooltip)
+    dw 0                ; cursor 3: RAPID FIRE (no tooltip)
+    dw 0                ; cursor 4: REGION (no tooltip)
+    dw bm_tt_logo1      ; cursor 5: TITLE LOGO
+    dw bm_tt_bgm1       ; cursor 6: SOUND TEST
+    dw bm_tt_wsu1       ; cursor 7: WPN UPGRADE
 
 bm_tt_line2:
     dw bm_tt_dbg2       ; cursor 0
     dw bm_tt_ss2        ; cursor 1
-    dw 0
-    dw 0
-    dw bm_tt_logo2      ; cursor 4
-    dw bm_tt_bgm2       ; cursor 5
-    dw bm_tt_wsu2       ; cursor 6
+    dw 0                ; cursor 2
+    dw 0                ; cursor 3
+    dw 0                ; cursor 4
+    dw bm_tt_logo2      ; cursor 5
+    dw bm_tt_bgm2       ; cursor 6
+    dw bm_tt_wsu2       ; cursor 7
 
 bm_tt_line3:
     dw bm_tt_dbg3       ; cursor 0
     dw 0                ; cursor 1: STAGE SELECT only has 2 lines
-    dw 0
-    dw 0
-    dw 0
-    dw 0
-    dw 0                ; cursor 6: WPN UPGRADE has 2 lines
+    dw 0                ; cursor 2: MULTI WEAPON only has 2 lines
+    dw 0                ; cursor 3
+    dw 0                ; cursor 4
+    dw 0                ; cursor 5
+    dw 0                ; cursor 6
+    dw 0                ; cursor 7: WPN UPGRADE has 2 lines
 
 bm_tt_line4:
     dw bm_tt_dbg4       ; cursor 0
-    dw 0
-    dw 0
-    dw 0
-    dw 0
-    dw 0
+    dw 0                ; cursor 1
+    dw 0                ; cursor 2
+    dw 0                ; cursor 3
+    dw 0                ; cursor 4
+    dw 0                ; cursor 5
     dw 0                ; cursor 6
+    dw 0                ; cursor 7
 
 bm_tt_title:
     dw bm_tt_dbg0       ; cursor 0: "HOW TO USE DEBUG MENU:"
     dw bm_tt_ss0        ; cursor 1: "HOW TO USE STAGE SELECT:"
-    dw 0
-    dw 0
-    dw bm_tt_logo0      ; cursor 4: "ABOUT TITLE LOGO:"
-    dw bm_tt_bgm0       ; cursor 5: "HOW TO USE SOUND TEST:"
-    dw bm_tt_wsu0       ; cursor 6: "ABOUT WEAPON UPGRADE:"
+    dw 0                ; cursor 2: MULTI WEAPON (no tooltip)
+    dw 0                ; cursor 3
+    dw 0                ; cursor 4
+    dw bm_tt_logo0      ; cursor 5: "ABOUT TITLE LOGO:"
+    dw bm_tt_bgm0       ; cursor 6: "HOW TO USE SOUND TEST:"
+    dw bm_tt_wsu0       ; cursor 7: "ABOUT WEAPON UPGRADE:"
 
 ; Pre-computed VOFF values for each tooltip row per cursor
 ; All left-justified at col 7 (same as menu labels)
 bm_tt_col0:
     dw VOFF(ROW_BOOT_TT0, 3)   ; cursor 0 title
     dw VOFF(ROW_BOOT_TT0, 4)   ; cursor 1 title
-    dw 0
-    dw 0
-    dw VOFF(ROW_BOOT_TT0, 4)   ; cursor 4 title
+    dw 0                       ; cursor 2 (MULTI WEAPON, no tooltip)
+    dw 0                       ; cursor 3
+    dw 0                       ; cursor 4
     dw VOFF(ROW_BOOT_TT0, 4)   ; cursor 5 title
     dw VOFF(ROW_BOOT_TT0, 4)   ; cursor 6 title
+    dw VOFF(ROW_BOOT_TT0, 4)   ; cursor 7 title
 
 bm_tt_col1:
     dw VOFF(ROW_BOOT_TT1, 3)   ; cursor 0 line 1
     dw VOFF(ROW_BOOT_TT1, 4)   ; cursor 1 line 1
-    dw 0
-    dw 0
-    dw VOFF(ROW_BOOT_TT1, 4)   ; cursor 4 line 1
+    dw 0                       ; cursor 2 (MULTI WEAPON, no tooltip)
+    dw 0                       ; cursor 3
+    dw 0                       ; cursor 4
     dw VOFF(ROW_BOOT_TT1, 4)   ; cursor 5 line 1
     dw VOFF(ROW_BOOT_TT1, 4)   ; cursor 6 line 1
+    dw VOFF(ROW_BOOT_TT1, 4)   ; cursor 7 line 1
 
 bm_tt_col2:
     dw VOFF(ROW_BOOT_TT2, 3)   ; cursor 0 line 2
     dw VOFF(ROW_BOOT_TT2, 4)   ; cursor 1 line 2
-    dw 0
-    dw 0
-    dw VOFF(ROW_BOOT_TT2, 4)   ; cursor 4 line 2
+    dw 0                       ; cursor 2 (MULTI WEAPON, no tooltip)
+    dw 0                       ; cursor 3
+    dw 0                       ; cursor 4
     dw VOFF(ROW_BOOT_TT2, 4)   ; cursor 5 line 2
     dw VOFF(ROW_BOOT_TT2, 4)   ; cursor 6 line 2
+    dw VOFF(ROW_BOOT_TT2, 4)   ; cursor 7 line 2
 
 bm_tt_col3:
     dw VOFF(ROW_BOOT_TT3, 3)   ; cursor 0 line 3
-    dw 0
-    dw 0
-    dw 0
-    dw 0
-    dw 0
-    dw 0
+    dw 0                       ; cursor 1
+    dw 0                       ; cursor 2
+    dw 0                       ; cursor 3
+    dw 0                       ; cursor 4
+    dw 0                       ; cursor 5
+    dw 0                       ; cursor 6
+    dw 0                       ; cursor 7
 
 bm_tt_col4:
     dw VOFF(ROW_BOOT_TT4, 3)   ; cursor 0 line 4
-    dw 0
-    dw 0
-    dw 0
-    dw 0
-    dw 0
-    dw 0
+    dw 0                       ; cursor 1
+    dw 0                       ; cursor 2
+    dw 0                       ; cursor 3
+    dw 0                       ; cursor 4
+    dw 0                       ; cursor 5
+    dw 0                       ; cursor 6
+    dw 0                       ; cursor 7
 
 bm_tt_dbg0: db "  HOW TO USE DEBUG MENU:", 0
 bm_tt_dbg1: db "- HOLD 2P START TO ENTER", 0
@@ -2607,6 +2669,7 @@ bm_er_done:
 bm_str_header: db "RAIDEN II MOD OPTIONS", 0
 bm_str_debug:  db "DEBUG MENU   :", 0
 bm_str_stsel:  db "STAGE SELECT :", 0
+bm_str_mw:     db "MULTI WEAPON :", 0
 bm_str_rf:     db "RAPID FIRE   :", 0
 bm_str_region: db "REGION:", 0
 bm_str_logo:   db "TITLE LOGO   :", 0
@@ -2618,7 +2681,7 @@ bm_str_on:     db "ON ", 0
 bm_str_off:    db "OFF", 0
 bm_str_hint:   db "PRESS ANY BUTTON TO START", 0
 bm_str_timer:  db "TIMER: ", 0
-bm_str_ver:    db "VERSION 1.0", 0
+bm_str_ver:    db "VERSION 1.11", 0
 
 ; ── title logo palette images ────────────────────────────────
 ; Sprite palette lines 36-41 (staging buffer 1F00:0480, 6x16 colors,
@@ -2887,7 +2950,7 @@ item_inc_normal:
 item_inc_noclamp:
 item_inc_store:
     mov  [bx], ax
-    call enforce_single     ; zero other weapons in group if MULTI_WPN=OFF
+    call L2_SEG:L2_ENFSINGLE ; zero other weapons / MULTI gate (blob2)
     ; If stage changed, reset area to 0
     cmp  bx, STAGE_VAR
     jne  item_inc_done
@@ -2930,7 +2993,7 @@ item_dec_normal:
 item_dec_noclamp:
 item_dec_store:
     mov  [bx], ax
-    call enforce_single     ; zero other weapons in group if MULTI_WPN=OFF
+    call L2_SEG:L2_ENFSINGLE ; zero other weapons / MULTI gate (blob2)
     ; If stage changed, reset area to 0
     cmp  bx, STAGE_VAR
     jne  item_dec_done
@@ -2996,6 +3059,16 @@ dm_layout_loop:
     cs mov  cx, [si+2]          ; cx = slot
     cmp  cx, 0xFFFF
     je   dm_done
+
+    ; MULTI WEAPON gate: when disabled, stop at the "- EXTRA OPTION -"
+    ; header (0xFF03) — its only item is MULTI WPN — so neither it nor
+    ; the MULTI row is drawn (navigation is capped to match). The rows
+    ; were blanked by erase_menu at entry, so they simply stay empty.
+    cmp  cx, 0xFF03
+    jne  dm_not_extra
+    cmp  word [MWEN_VAR], 0
+    je   dm_done
+dm_not_extra:
 
     cs mov  ax, [si]            ; ax = screen row
 

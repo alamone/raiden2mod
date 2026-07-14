@@ -40,6 +40,7 @@ SW_HOMING   equ 0xBF20
 SW_ARMED    equ 0xBF26
 MENU_LIVE   equ 0xBF5C      ; 1 = menu game live (gates the late-join apply)
 BOMB_PEND   equ 0xBF5E      ; struct base of a joiner awaiting the bomb fill
+MWEN_VAR    equ 0xBF62      ; MULTI WEAPON master enable (enforce_single gate)
 WEAPON_ARMED equ 0xBF24     ; pending bitmask: bit0=P1, bit1=P2 (3 at confirm),
                             ; cleared per player by menu_tick_impl on activation
 MW_VULCAN   equ 0xBF18
@@ -95,6 +96,9 @@ vec2_bjoin:                         ; B581:0060 (per-frame menu tick)
 vec2_mainovr:                       ; B581:0068
     jmp  near main_override_impl
     times (8 - ($ - vec2_mainovr)) db 0x90
+vec2_enfsingle:                     ; B581:0070
+    jmp  near enforce_single_impl
+    times (8 - ($ - vec2_enfsingle)) db 0x90
 ; ── rapid-fire reload table (LOCAL COPY — sync with the
 ;    bm_rf_reloads table in stage_select.asm) ─────────────────
 l2_rf_reloads:
@@ -670,6 +674,61 @@ vwi_zeros:
     mov  word [bx+0x0E], ax
     mov  word [bx+0x10], ax
     mov  word [bx+0x12], ax
+    retf
+
+; ============================================================
+; ENFORCE_SINGLE_IMPL  (B581:0070 — far-called from item_inc/item_dec in
+; the primary blob after a weapon-level change; relocated here from blob1
+; to free boot-menu space). BX = address of the var that just changed;
+; menu runs with DS=0 so the absolute [MW_*]/[SW_*] refs resolve. AX is
+; scratch. Self-contained (no CS data, no further calls) -> ends in RETF.
+;   First: the MULTI WEAPON master gate (MWEN_VAR=0 keeps MULTI_WPN at 0).
+;   Then: if MULTI_WPN=0 and the changed weapon is now non-zero, zero the
+;   other weapons in its group (main or sub) — stock single-weapon rule.
+; ============================================================
+enforce_single_impl:
+    cmp  word [MWEN_VAR], 0
+    jne  esi_mw_ok
+    mov  word [MULTI_WPN], 0
+esi_mw_ok:
+    cmp  word [MULTI_WPN], 0
+    jne  esi_done           ; multi weapons ON -> no enforcement
+    mov  ax, [bx]
+    test ax, ax
+    jz   esi_done           ; value is 0, nothing to enforce
+    cmp  bx, MW_VULCAN
+    je   esi_zero_main
+    cmp  bx, MW_LASER
+    je   esi_zero_main
+    cmp  bx, MW_PLASMA
+    je   esi_zero_main
+    cmp  bx, SW_NUCLEAR
+    je   esi_zero_sub
+    cmp  bx, SW_HOMING
+    je   esi_zero_sub
+    jmp  esi_done
+esi_zero_main:
+    cmp  bx, MW_VULCAN
+    je   esi_zm_skip_v
+    mov  word [MW_VULCAN], 0
+esi_zm_skip_v:
+    cmp  bx, MW_LASER
+    je   esi_zm_skip_l
+    mov  word [MW_LASER], 0
+esi_zm_skip_l:
+    cmp  bx, MW_PLASMA
+    je   esi_done
+    mov  word [MW_PLASMA], 0
+    jmp  esi_done
+esi_zero_sub:
+    cmp  bx, SW_NUCLEAR
+    je   esi_zs_skip_n
+    mov  word [SW_NUCLEAR], 0
+esi_zs_skip_n:
+    cmp  bx, SW_HOMING
+    je   esi_done
+    mov  word [SW_HOMING], 0
+esi_done:
     retf
 
 ; ── TITLE LOGO palette images at FIXED offsets (primary blob's

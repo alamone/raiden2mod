@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Raiden II (Japan) — Enhancement Patch</title>
+<style>
+  /* Dark palette is the default; the OS prefers-color-scheme media query auto-
+     follows light, and the header toggle pins html.theme-light / .theme-dark. */
+  :root {
+    color-scheme: dark;
+    --bg:#15171c; --fg:#d7dbe0; --muted:#8a929c;
+    --accent:#8fb7ff; --link:#8fb7ff;
+    --panel:#1c1f26; --border:#2a2f38; --row:#23272f; --hover:#1c2230;
+    --ctrl-bg:#11131a; --ctrl-bd:#3a4150; --code:#11131a;
+    --btn:#2d6cdf; --btn-fg:#fff; --btn-alt:#2a2f38; --btn-dis:#333944; --btn-dis-fg:#7d8794;
+    --ok:#5fd08a; --bad:#ff7b72; --dash:#3a4150;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not(.theme-dark) {
+      color-scheme: light;
+      --bg:#eef1f6; --fg:#1b2027; --muted:#5b636e;
+      --accent:#2a52cc; --link:#2a52cc;
+      --panel:#ffffff; --border:#d4dae3; --row:#eef1f6; --hover:#e6eefb;
+      --ctrl-bg:#ffffff; --ctrl-bd:#a6aebd; --code:#eef1f6;
+      --btn:#2a5fd0; --btn-fg:#fff; --btn-alt:#e2e7ef; --btn-dis:#d2d7df; --btn-dis-fg:#9aa1ad;
+      --ok:#2e9e5b; --bad:#d23b30; --dash:#b8bfca;
+    }
+  }
+  :root.theme-light {
+    color-scheme: light;
+    --bg:#eef1f6; --fg:#1b2027; --muted:#5b636e;
+    --accent:#2a52cc; --link:#2a52cc;
+    --panel:#ffffff; --border:#d4dae3; --row:#eef1f6; --hover:#e6eefb;
+    --ctrl-bg:#ffffff; --ctrl-bd:#a6aebd; --code:#eef1f6;
+    --btn:#2a5fd0; --btn-fg:#fff; --btn-alt:#e2e7ef; --btn-dis:#d2d7df; --btn-dis-fg:#9aa1ad;
+    --ok:#2e9e5b; --bad:#d23b30; --dash:#b8bfca;
+  }
+  body { background:var(--bg); color:var(--fg); font:15px/1.5 system-ui,Segoe UI,Roboto,sans-serif;
+         margin:0; padding:24px; transition:background-color .2s, color .2s; }
+  .wrap { max-width:680px; margin:0 auto; }
+  .topbar { display:flex; justify-content:flex-end; gap:8px; margin-bottom:8px; }
+  .topbar button { background:var(--btn-alt); color:var(--fg); border:1px solid var(--border);
+        border-radius:7px; padding:5px 10px; font:inherit; font-size:13px; cursor:pointer; }
+  .topbar button.active { border-color:var(--accent); color:var(--accent); }
+  h1 { font-size:22px; margin:0 0 4px; }
+  h2 { font-size:15px; text-transform:uppercase; letter-spacing:.06em; color:var(--accent);
+       border-bottom:1px solid var(--border); padding-bottom:6px; margin:28px 0 14px; }
+  .sub { color:var(--muted); margin:0 0 6px; }
+  a { color:var(--link); }
+  .card { background:var(--panel); border:1px solid var(--border); border-radius:10px; padding:16px 18px; }
+  .drop { border:1.5px dashed var(--dash); border-radius:10px; padding:22px; text-align:center; cursor:pointer; transition:.15s; }
+  .drop:hover, .drop.over { border-color:var(--accent); background:var(--hover); }
+  .files { margin-top:14px; }
+  .frow { display:flex; align-items:center; gap:10px; padding:6px 0; font-variant-numeric:tabular-nums; }
+  .frow .name { font-family:ui-monospace,Consolas,monospace; }
+  .badge { width:1.4em; text-align:center; }
+  .ok { color:var(--ok); } .bad { color:var(--bad); } .pend { color:var(--muted); }
+  .opt { display:grid; grid-template-columns:160px 1fr; align-items:center; gap:10px 14px;
+         padding:7px 0; border-bottom:1px solid var(--row); }
+  .opt:last-child { border-bottom:none; }
+  .opt .note { grid-column:2; color:var(--muted); font-size:13px; margin-top:-4px; }
+  select, input[type=number] { background:var(--ctrl-bg); color:var(--fg); border:1px solid var(--ctrl-bd);
+        border-radius:6px; padding:6px 8px; font:inherit; width:100%; max-width:240px; }
+  .toggle { display:inline-flex; align-items:center; gap:8px; }
+  button.action { background:var(--btn); color:var(--btn-fg); border:0; border-radius:8px; padding:11px 18px;
+           font:inherit; font-weight:600; cursor:pointer; }
+  button.action:disabled { background:var(--btn-dis); color:var(--btn-dis-fg); cursor:not-allowed; }
+  button.alt { background:var(--btn-alt); color:var(--fg); border:1px solid var(--border); }
+  #status { margin-top:14px; min-height:1.4em; }
+  .dl { display:flex; gap:12px; flex-wrap:wrap; margin-top:14px; }
+  .hint { color:var(--muted); font-size:13px; }
+  code { background:var(--code); padding:1px 5px; border-radius:4px; font-family:ui-monospace,Consolas,monospace; }
+  .footer { margin-top:34px; text-align:center; color:var(--muted); font-size:13px; }
+  .footer textarea { width:100%; box-sizing:border-box; background:var(--ctrl-bg); color:var(--fg);
+        border:1px solid var(--border); border-radius:8px; padding:10px; font:12px/1.45 ui-monospace,Consolas,monospace;
+        resize:vertical; }
+  .footer .label { display:block; text-align:left; margin:0 0 6px; color:var(--accent); text-transform:uppercase;
+        letter-spacing:.06em; font-size:13px; }
+  /* language spans */
+  .lang-jp .lang-en, .lang-en .lang-jp { display:none; }
+</style>
+</head>
+<body class="lang-en">
+<div class="wrap">
+  <div class="topbar">
+    <button id="lang-en-btn" onclick="setLang('en')">English</button>
+    <button id="lang-jp-btn" onclick="setLang('jp')">日本語</button>
+    <button id="theme-btn" onclick="toggleTheme()"><span id="theme-icon">🌙</span> <span id="theme-label"></span></button>
+  </div>
+
+  <h1 data-t="title_h">Raiden II (Japan) — Enhancement Patch</h1>
+  <p class="sub" data-t="tagline"></p>
+  <p class="sub"><span data-t="src_note"></span>
+     <a id="ghlink" href="https://github.com/alamone/raiden2mod" target="_blank" rel="noopener">GitHub</a>.</p>
+
+  <h2 data-t="step1"></h2>
+  <div class="card">
+    <div class="drop" id="drop">
+      <div><b data-t="drop_main"></b></div>
+      <div class="hint" data-t="drop_hint"></div>
+      <input type="file" id="picker" multiple style="display:none">
+    </div>
+    <div class="files">
+      <div class="frow"><span class="badge pend" id="b_prg0">•</span><span class="name">prg0.u0211</span><span id="s_prg0" class="hint"></span></div>
+      <div class="frow"><span class="badge pend" id="b_rom2j">•</span><span class="name">rom2j.u0212</span><span id="s_rom2j" class="hint"></span></div>
+    </div>
+  </div>
+
+  <h2 data-t="step2"></h2>
+  <div class="card" id="options"></div>
+
+  <h2 data-t="step3"></h2>
+  <div class="card">
+    <button id="go" class="action" disabled data-t="generate"></button>
+    <div id="status" class="hint"></div>
+    <div class="dl" id="downloads"></div>
+    <p class="hint" style="margin-bottom:0" data-t="replace_note"></p>
+  </div>
+
+  <div class="footer">
+    <span class="label" data-t="changelog_label"></span>
+    <textarea id="changelog" readonly rows="10">Changelog:
+v1.11: 7/7/2026: Fixed: with boot timeout set to SKIP, releasing the P1 Start button held at power-on to force the boot menu no longer exits the menu — only a fresh Start press confirms.
+v1.10: 6/29/2026: Boot-menu auto-confirm timeout is now adjustable (10-second steps); choose SKIP to bypass the menu entirely (hold P1 Start at power-on to force it). MULTI WEAPON added as a boot-menu option — when OFF, the stage-select MULTI WPN row is hidden. Browser patcher released.
+v1.0: 6/2026: Initial release. Boot menu: DEBUG MENU, STAGE SELECT, REGION, RAPID FIRE, SOUND TEST, TITLE LOGO, WPN UPGRADE. In-game stage select: stage/area/loop, miss counter, main &amp; sub weapon power, item stock (bombs, bomb type, fairy), multi weapon. Settings apply to both players including a mid-game join; deaths and continues revert to stock.
+</textarea>
+    <p><span data-t="dev_by"></span> <a href="https://x.com/alamone" target="_blank" rel="noopener">@alamone</a></p>
+  </div>
+</div>
+
+<script src="r2patch.js"></script>
+<script src="r2apply.js"></script>
+<script>
+(function () {
+  "use strict";
+  var FILES = ["prg0.u0211", "rom2j.u0212"];
+  var loaded = {}, values = {}, lang = "en";
+
+  // ---- translations ---------------------------------------------------
+  var T = {
+    title_doc:  { en:"Raiden II (Japan) — Enhancement Patch", jp:"雷電II (日本) — 改造パッチ" },
+    title_h:    { en:"Raiden II (Japan) — Enhancement Patch", jp:"雷電II (日本) — 改造パッチ" },
+    tagline:    { en:"Patches your Raiden II (Japan) program ROMs in your browser and lets you choose the boot-menu defaults. Nothing is uploaded — everything runs locally on this page.",
+                  jp:"雷電II (日本) のプログラムROMをブラウザ内でパッチし、起動メニューの初期値を選べます。アップロードは一切行われず、すべてこのページ内で処理されます。" },
+    src_note:   { en:"Source & command-line build:", jp:"ソースコード・コマンドラインビルド：" },
+    step1:      { en:"1 · Select ROM files", jp:"1 · ROMファイルを選択" },
+    step2:      { en:"2 · Options", jp:"2 · オプション" },
+    step3:      { en:"3 · Patch & download", jp:"3 · パッチして保存" },
+    drop_main:  { en:"Drop prg0.u0211 and rom2j.u0212 here", jp:"prg0.u0211 と rom2j.u0212 をここにドロップ" },
+    drop_hint:  { en:"…or click to choose. Files are identified automatically by checksum.",
+                  jp:"…またはクリックして選択。ファイルはチェックサムで自動判別されます。" },
+    notloaded:  { en:"not loaded", jp:"未読み込み" },
+    verified:   { en:"verified · CRC ", jp:"確認済み · CRC " },
+    mismatch:   { en:"checksum mismatch — not a pristine dump (or already patched)",
+                  jp:"チェックサム不一致 — 未改造のダンプではありません（または既にパッチ済み）" },
+    unrecognized:{ en:"Unrecognized file — checksum doesn’t match either ROM.",
+                  jp:"認識できないファイル — どちらのROMのチェックサムとも一致しません。" },
+    ready:      { en:"Ready — click Generate.", jp:"準備完了 — 「生成」を押してください。" },
+    generate:   { en:"Generate patched ROMs", jp:"パッチ済みROMを生成" },
+    patched:    { en:"Patched. CRC32 — prg0 {a}, rom2j {b}. Download both below.",
+                  jp:"パッチ完了。CRC32 — prg0 {a}, rom2j {b}。下の両方を保存してください。" },
+    dl:         { en:"Download ", jp:"保存：" },
+    err:        { en:"Error: ", jp:"エラー：" },
+    replace_note:{ en:"Replace the two files in your Raiden II (Japan) ROM set with the downloaded ones. Emulators that checksum ROMs will flag them as “bad” — that is expected for a modified set.",
+                  jp:"ダウンロードしたファイルで、お使いの雷電II (日本) ROMセットの2ファイルを置き換えてください。チェックサムを検証するエミュレータでは「bad」と表示されますが、改造セットでは正常です。" },
+    changelog_label:{ en:"Changelog", jp:"変更履歴" },
+    dev_by:     { en:"Developed by", jp:"開発：" },
+    // option labels (keyed by default.key)
+    debug_menu:    { en:"DEBUG MENU",   jp:"デバッグメニュー" },
+    stage_select:  { en:"STAGE SELECT", jp:"ステージセレクト" },
+    multi_weapon:  { en:"MULTI WEAPON", jp:"マルチウェポン" },
+    region:        { en:"REGION",       jp:"リージョン" },
+    rapid_fire:    { en:"RAPID FIRE",   jp:"連射" },
+    sound_test:    { en:"SOUND TEST",   jp:"サウンドテスト" },
+    title_logo:    { en:"TITLE LOGO",   jp:"タイトルロゴ" },
+    wpn_sw_upgrade:{ en:"WPN UPGRADE",  jp:"ウェポンアップグレード" },
+    boot_timeout:  { en:"BOOT TIMEOUT", jp:"起動タイムアウト" },
+    note_boot_timeout:{ en:"Hold P1 Start at power-on to force the boot menu",
+                  jp:"電源投入時に1P STARTを押し続けると起動メニューを表示できます" },
+    ON:  { en:"ON",  jp:"オン" },
+    OFF: { en:"OFF", jp:"オフ" }
+  };
+  // option-VALUE translations (English option text -> jp); others kept as-is
+  var TOPT = {
+    "SKIP":{en:"SKIP",jp:"スキップ"}, "OFF":{en:"OFF",jp:"オフ"},
+    "WHITE":{en:"WHITE",jp:"ホワイト"}, "COLOR":{en:"COLOR",jp:"カラー"},
+    "10 SEC.":{en:"10 SEC.",jp:"10秒"}, "20 SEC.":{en:"20 SEC.",jp:"20秒"},
+    "30 SEC.":{en:"30 SEC.",jp:"30秒"}, "40 SEC.":{en:"40 SEC.",jp:"40秒"},
+    "50 SEC.":{en:"50 SEC.",jp:"50秒"}, "60 SEC.":{en:"60 SEC.",jp:"60秒"}
+  };
+  function t(k) { return (T[k] && T[k][lang]) || (T[k] && T[k].en) || k; }
+
+  // ---- options UI -----------------------------------------------------
+  var optBox = document.getElementById("options");
+  var optCtl = {};   // key -> {type, select?, checkbox?, ontext?, noteEl?, def, optvals?}
+  R2_PATCH.defaults.forEach(function (d) {
+    values[d.key] = d.def;
+    var row = document.createElement("div"); row.className = "opt";
+    var lab = document.createElement("label"); lab.dataset.t = d.key; row.appendChild(lab);
+    var rec = { type: d.type, def: d.def, optvals: d.optvals || null };
+
+    if (d.type === "onoff") {
+      var wrap = document.createElement("span"); wrap.className = "toggle";
+      var cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = !!d.def;
+      var txt = document.createElement("span");
+      cb.onchange = function () { values[d.key] = cb.checked ? 1 : 0; rec.txt = cb.checked ? "ON" : "OFF"; txt.textContent = t(rec.txt); };
+      rec.cb = cb; rec.txtEl = txt; rec.txt = d.def ? "ON" : "OFF";
+      wrap.appendChild(cb); wrap.appendChild(txt); row.appendChild(wrap);
+    } else if (d.type === "list") {
+      var sel = document.createElement("select");
+      d.options.forEach(function (o, i) {
+        var op = document.createElement("option"); op.value = i; op.textContent = o; op.dataset.en = o; sel.appendChild(op);
+      });
+      if (d.optvals) { sel.selectedIndex = Math.max(0, d.optvals.indexOf(d.def)); }
+      else { sel.value = d.def; }
+      sel.onchange = function () {
+        var i = parseInt(sel.value, 10);
+        values[d.key] = d.optvals ? d.optvals[i] : i;
+        if (rec.noteEl) rec.noteEl.style.display = (d.notewhen !== undefined && values[d.key] === d.notewhen) ? "" : "none";
+      };
+      rec.sel = sel; row.appendChild(sel);
+    } else { // num
+      var inp = document.createElement("input"); inp.type = "number"; inp.min = d.min; inp.max = d.max; inp.value = d.def;
+      inp.onchange = function () {
+        var v = parseInt(inp.value, 10); if (isNaN(v)) v = d.def;
+        v = Math.max(d.min, Math.min(d.max, v)); inp.value = v; values[d.key] = v;
+      };
+      row.appendChild(inp);
+    }
+
+    if (d.note) {
+      var n = document.createElement("div"); n.className = "note"; n.dataset.t = "note_" + d.key;
+      if (d.notewhen !== undefined) n.style.display = (d.def === d.notewhen) ? "" : "none";
+      row.appendChild(n); rec.noteEl = n; rec.notewhen = d.notewhen;
+    }
+    optCtl[d.key] = rec;
+    optBox.appendChild(row);
+  });
+
+  // ---- language -------------------------------------------------------
+  function setLang(l) {
+    lang = (l === "jp") ? "jp" : "en";
+    document.body.classList.remove("lang-en", "lang-jp");
+    document.body.classList.add("lang-" + lang);
+    document.title = t("title_doc");
+    document.documentElement.lang = (lang === "jp") ? "ja" : "en";
+    // static [data-t] text
+    var els = document.querySelectorAll("[data-t]");
+    for (var i = 0; i < els.length; i++) els[i].textContent = t(els[i].dataset.t);
+    // onoff value words + list option texts
+    for (var k in optCtl) {
+      var r = optCtl[k];
+      if (r.txtEl) r.txtEl.textContent = t(r.txt);
+      if (r.sel) {
+        for (var j = 0; j < r.sel.options.length; j++) {
+          var en = r.sel.options[j].dataset.en;
+          r.sel.options[j].textContent = (TOPT[en] ? TOPT[en][lang] : en);
+        }
+      }
+    }
+    document.getElementById("lang-en-btn").classList.toggle("active", lang === "en");
+    document.getElementById("lang-jp-btn").classList.toggle("active", lang === "jp");
+    refreshFileStatus();
+    try { localStorage.setItem("r2lang", lang); } catch (e) {}
+  }
+  function initLang() {
+    var l = null; try { l = localStorage.getItem("r2lang"); } catch (e) {}
+    if (l !== "en" && l !== "jp") {
+      var tags = (navigator.languages && navigator.languages.length) ? navigator.languages : [navigator.language || ""];
+      l = tags.some(function (x) { return (x || "").toLowerCase().indexOf("ja") === 0; }) ? "jp" : "en";
+    }
+    setLang(l);
+  }
+
+  // ---- theme ----------------------------------------------------------
+  function storedTheme() { try { var x = localStorage.getItem("r2theme"); return (x === "light" || x === "dark") ? x : null; } catch (e) { return null; } }
+  function osTheme() { return (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches) ? "light" : "dark"; }
+  function resolvedTheme() { return storedTheme() || osTheme(); }
+  function applyTheme() {
+    var r = document.documentElement, x = storedTheme();
+    r.classList.toggle("theme-light", x === "light");
+    r.classList.toggle("theme-dark",  x === "dark");
+    var offerDark = (resolvedTheme() === "light");
+    document.getElementById("theme-icon").textContent = offerDark ? "🌙" : "☀";
+    document.getElementById("theme-label").textContent = offerDark ? (lang === "jp" ? "ダーク" : "Dark") : (lang === "jp" ? "ライト" : "Light");
+  }
+  window.toggleTheme = function () { try { localStorage.setItem("r2theme", resolvedTheme() === "light" ? "dark" : "light"); } catch (e) {} applyTheme(); };
+  window.setLang = function (l) { setLang(l); applyTheme(); };
+
+  // ---- file loading + identification ----------------------------------
+  function badgeEl(name) { return name === "prg0.u0211" ? "prg0" : "rom2j"; }
+  function refreshFileStatus() {
+    FILES.forEach(function (f) {
+      var key = badgeEl(f), b = document.getElementById("b_" + key), s = document.getElementById("s_" + key);
+      if (loaded[f]) { b.className = "badge ok"; b.textContent = "✓"; s.textContent = t("verified") + R2_PATCH.files[f].crc32; }
+      else if (b.dataset.bad === "1") { b.className = "badge bad"; b.textContent = "✗"; s.textContent = t("mismatch"); }
+      else { b.className = "badge pend"; b.textContent = "•"; s.textContent = t("notloaded"); }
+    });
+  }
+  function status(msg, cls) { var el = document.getElementById("status"); el.textContent = msg; el.className = cls || "hint"; }
+  function refreshGo() {
+    var ready = FILES.every(function (f) { return loaded[f]; });
+    document.getElementById("go").disabled = !ready;
+    if (ready) status(t("ready"), "");
+  }
+  function ingest(file) {
+    var rd = new FileReader();
+    rd.onload = function () {
+      var bytes = new Uint8Array(rd.result);
+      var sha = R2APPLY.sha1(bytes);
+      var match = FILES.filter(function (f) { return R2_PATCH.files[f].sha1 === sha; })[0];
+      if (!match) {
+        var nm = (file.name || "").toLowerCase();
+        var guess = nm.indexOf("0211") >= 0 ? "prg0.u0211" : nm.indexOf("0212") >= 0 ? "rom2j.u0212" : null;
+        if (guess) { document.getElementById("b_" + badgeEl(guess)).dataset.bad = "1"; refreshFileStatus(); }
+        else status(t("unrecognized"), "bad");
+        return;
+      }
+      loaded[match] = bytes;
+      document.getElementById("b_" + badgeEl(match)).dataset.bad = "0";
+      refreshFileStatus(); refreshGo();
+    };
+    rd.readAsArrayBuffer(file);
+  }
+  function handleFiles(list) { for (var i = 0; i < list.length; i++) ingest(list[i]); }
+
+  var drop = document.getElementById("drop"), picker = document.getElementById("picker");
+  drop.onclick = function () { picker.click(); };
+  picker.onchange = function () { handleFiles(picker.files); };
+  ["dragenter", "dragover"].forEach(function (e) { drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.add("over"); }); });
+  ["dragleave", "drop"].forEach(function (e) { drop.addEventListener(e, function (ev) { ev.preventDefault(); drop.classList.remove("over"); }); });
+  drop.addEventListener("drop", function (ev) { handleFiles(ev.dataTransfer.files); });
+
+  // ---- patch + download ----------------------------------------------
+  document.getElementById("go").onclick = function () {
+    try {
+      var out = R2APPLY.buildPatched(R2_PATCH, loaded, values);
+      var dl = document.getElementById("downloads"); dl.innerHTML = "";
+      FILES.forEach(function (f) {
+        var btn = document.createElement("button"); btn.className = "alt"; btn.textContent = t("dl") + f;
+        btn.onclick = (function (bytes, name) {
+          return function () {
+            var b = new Blob([bytes], { type: "application/octet-stream" });
+            var u = URL.createObjectURL(b), a = document.createElement("a");
+            a.href = u; a.download = name; a.click();
+            setTimeout(function () { URL.revokeObjectURL(u); }, 4000);
+          };
+        })(out[f], f);
+        dl.appendChild(btn);
+      });
+      status(t("patched").replace("{a}", R2APPLY.crc32(out["prg0.u0211"])).replace("{b}", R2APPLY.crc32(out["rom2j.u0212"])), "ok");
+    } catch (e) { status(t("err") + e.message, "bad"); }
+  };
+
+  initLang();
+  applyTheme();
+})();
+</script>
+</body>
+</html>
